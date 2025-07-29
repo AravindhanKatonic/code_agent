@@ -1,0 +1,13 @@
+streamlit
+mistralai
+whisper
+Pillow
+transformers
+torch
+pydub
+SpeechRecognition
+streamlit-javascript
+streamlit-ace
+matplotlib
+pandas
+pytest
