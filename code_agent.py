@@ -6,8 +6,6 @@ from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
 import ast
 import torch
-import subprocess
-import tempfile
 import os
 import streamlit.components.v1 as components
 import speech_recognition as sr
@@ -15,8 +13,11 @@ from pydub import AudioSegment
 from streamlit_javascript import st_javascript
 import pathlib
 from streamlit_ace import st_ace
-import io, contextlib
-
+import io, contextlib ,subprocess, tempfile, time
+from streamlit.components.v1 import html as html_embed
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="AI Code Agent", layout="wide")
 st.title("AI Code Agent — Enhanced with Smart Modules")
@@ -99,7 +100,7 @@ header {visibility: hidden;}
 }
 
 .main-title {
-    font-size: 3rem;
+    font-size: 2rem;
     font-weight: 800;
     margin-bottom: 0.5rem;
     background: linear-gradient(45deg, #ffffff, #e2e8f0);
@@ -740,7 +741,8 @@ section = st.sidebar.radio("🔍 Choose Section:", [
     "📁 File & Image", 
     "🔧 Code Tools", 
     "📊 Analyze Tools",
-    "💻 Code Editor" 
+    "💻 Code Editor" ,
+    "🧪 Tester"
 ])
 
 
@@ -833,7 +835,7 @@ if section == "💬 Chat & Voice":
             st.button("🎤 Start Speaking")
 
 elif section == "📁 File & Image":
-    tab3, tab4 = st.tabs(["📂 Code File", "🖼️ Image Upload"])
+    tab3, tab4, tab5 = st.tabs(["📂 Code File", "🖼️ Image Upload", "🧩 Project Runner"])
 
     with tab3:
         st.subheader("📂 Upload or Load Code Files")
@@ -963,6 +965,13 @@ elif section == "📁 File & Image":
                     st.markdown(f"### 📃 Summary of `{selected_file}`\n\n{summary}")
             if col5.button("💬 Chat with Code", key="chatcode"):
                 st.session_state.chat_active = True
+
+            if "open_editor" not in st.session_state:
+                st.session_state.open_editor = False
+
+            if st.button("🖊️ Open in Code Editor"):
+                st.session_state.open_editor = True
+
             
             if st.session_state.get("chat_active", False):
                 st.markdown("### 💬 Chat with Your Code")
@@ -981,6 +990,62 @@ elif section == "📁 File & Image":
 
                         response = chat_with_code_mistral(user_input, context)
                         st.markdown(f"**🧠 Mistral Response:**\n\n{response}")
+
+            if st.session_state.open_editor:
+                st.markdown("## 📝 VS Code-Like Editor with Full App Runner")
+
+                edited_code = st_ace(
+                    value=code,
+                    language=language,
+                    theme="monokai",
+                    keybinding="vscode",
+                    font_size=14,
+                    tab_size=4,
+                    show_gutter=True,
+                    show_print_margin=False,
+                    wrap=True,
+                    height=500,
+                    key="vs_editor"
+                )
+
+                def detect_app_type(code):
+                    if "streamlit" in code:
+                        return "streamlit"
+                    elif "Flask" in code or "from flask" in code:
+                        return "flask"
+                    elif "<html" in code.lower():
+                        return "html"
+                    else:
+                        return "python"
+
+                app_type = detect_app_type(edited_code)
+                st.info(f"🧠 Detected app type: **{app_type.upper()}**")
+
+                if st.button("🚀 Run App"):
+                    if app_type == "python":
+                        try:
+                            output = io.StringIO()
+                            with contextlib.redirect_stdout(output):
+                                exec(edited_code, {})
+                            st.success("✅ Python script executed!")
+                            st.text_area("📤 Output", output.getvalue(), height=200)
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+
+                    elif app_type == "html":
+                        st.success("✅ HTML Preview Below")
+                        st.components.v1.html(edited_code, height=500)
+
+                    elif app_type == "flask":
+                        st.warning("⚠️ Flask app will launch in a separate window.")
+                        subprocess.Popen(["python", selected_file])
+                        st.markdown("Visit [http://localhost:5000](http://localhost:5000)")
+
+                    elif app_type == "streamlit":
+                        st.warning("⚠️ Streamlit app will launch in another tab.")
+                        subprocess.Popen(["streamlit", "run", selected_file])
+                        st.markdown("Visit [http://localhost:8501](http://localhost:8501)")
+
 
 
     with tab4:
@@ -1010,6 +1075,165 @@ elif section == "📁 File & Image":
 
             except Exception as e:
                 st.error(f"❌ Failed to generate code: {e}")
+    with tab5:
+        st.subheader("🧩 Full Project Runner & File Explorer")
+
+        if "project_proc" not in st.session_state:
+            st.session_state.project_proc = None
+        if "log_output" not in st.session_state:
+            st.session_state.log_output = ""
+        if "file_paths" not in st.session_state:
+            st.session_state.file_paths = []
+        if "project_dir" not in st.session_state:
+            st.session_state.project_dir = tempfile.mkdtemp()
+        if "selected_file" not in st.session_state:
+            st.session_state.selected_file = None
+        if "run_app_triggered" not in st.session_state:
+            st.session_state.run_app_triggered = False
+
+        # Upload or GitHub
+        mode = st.radio("Choose Project Source:", ["Upload Files", "GitHub Repo"], horizontal=True)
+
+        if mode == "Upload Files":
+            uploaded_files = st.file_uploader("Upload full project folder", accept_multiple_files=True)
+            if uploaded_files:
+                st.session_state.project_dir = tempfile.mkdtemp()
+                st.session_state.file_paths = []
+                for file in uploaded_files:
+                    full_path = os.path.join(st.session_state.project_dir, file.name)
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    with open(full_path, "wb") as f:
+                        f.write(file.read())
+                    st.session_state.file_paths.append(full_path)
+
+        elif mode == "GitHub Repo":
+            import git
+            github_url = st.text_input("Enter GitHub Repo URL:")
+            if st.button("Clone Repository"):
+                with st.spinner("Cloning repo..."):
+                    try:
+                        st.session_state.project_dir = tempfile.mkdtemp()
+                        git.Repo.clone_from(github_url, st.session_state.project_dir)
+                        file_paths = []
+                        for root, _, files in os.walk(st.session_state.project_dir):
+                            for file in files:
+                                file_paths.append(os.path.join(root, file))
+                        st.session_state.file_paths = file_paths
+                        st.success("✅ Repo cloned successfully.")
+                    except Exception as e:
+                        st.error(f"❌ Failed to clone repo: {e}")
+
+        if st.session_state.file_paths:
+            st.markdown("### 📁 File Tree")
+            for path in sorted(st.session_state.file_paths):
+                rel_path = os.path.relpath(path, st.session_state.project_dir)
+                if st.button(f"📄 {rel_path}", key=rel_path):
+                    st.session_state.selected_file = rel_path
+
+        # Show Editor
+        if st.session_state.selected_file:
+            selected_path = os.path.join(st.session_state.project_dir, st.session_state.selected_file)
+            ext = pathlib.Path(selected_path).suffix.lower()
+            lang_map = {
+                ".py": "python", ".html": "html", ".css": "css", ".js": "javascript",
+                ".json": "json", ".txt": "text", ".md": "markdown"
+            }
+            language = lang_map.get(ext, "text")
+
+            try:
+                with open(selected_path, "r", encoding="utf-8") as f:
+                    selected_code = f.read()
+            except Exception:
+                selected_code = ""
+
+            edited_code = st_ace(
+                value=selected_code,
+                language=language,
+                theme="monokai",
+                keybinding="vscode",
+                height=500,
+                key="ace_project_editor"
+            )
+
+            # Save on change
+            with open(selected_path, "w", encoding="utf-8") as f:
+                f.write(edited_code)
+
+        # Main File Selector
+        runnable_files = [os.path.relpath(p, st.session_state.project_dir)
+                        for p in st.session_state.file_paths if p.endswith((".py", ".html"))]
+        if runnable_files:
+            main_file = st.selectbox("🎯 Select Main File to Run", runnable_files)
+
+            main_path = os.path.join(st.session_state.project_dir, main_file)
+
+            def detect_app_type(code):
+                if "streamlit" in code:
+                    return "streamlit"
+                elif "Flask" in code or "from flask" in code:
+                    return "flask"
+                elif "<html" in code.lower():
+                    return "html"
+                else:
+                    return "python"
+
+            with open(main_path, "r", encoding="utf-8") as f:
+                main_code = f.read()
+
+            app_type = detect_app_type(main_code)
+            st.info(f"🧠 Detected app type: **{app_type.upper()}**")
+
+            # Run Project
+            if st.button("🚀 Run Project"):
+                if st.session_state.project_proc:
+                    st.warning("A project is already running.")
+                else:
+                    try:
+                        log_path = os.path.join(st.session_state.project_dir, "log.txt")
+                        with open(log_path, "w") as log_file:
+                            if app_type == "python":
+                                proc = subprocess.Popen(["python", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                            elif app_type == "flask":
+                                proc = subprocess.Popen(["python", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                                st.markdown("🌐 Flask running at [http://localhost:5000](http://localhost:5000)")
+                            elif app_type == "streamlit":
+                                proc = subprocess.Popen(["streamlit", "run", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                                st.markdown("🌐 Streamlit running at [http://localhost:8501](http://localhost:8501)")
+                            elif app_type == "html":
+                                st.success("✅ HTML Preview Below")
+                                html_embed(main_code, height=500)
+                                proc = None
+                            st.session_state.project_proc = proc
+                            st.session_state.run_app_triggered = True
+                            time.sleep(1)  # wait to generate log
+                    except Exception as e:
+                        st.error(f"❌ Error running app: {e}")
+
+            # Kill/Restart
+            col1, col2 = st.columns(2)
+            if col1.button("🛑 Stop App"):
+                if st.session_state.project_proc:
+                    st.session_state.project_proc.terminate()
+                    st.session_state.project_proc = None
+                    st.success("🛑 App stopped.")
+
+            if col2.button("🔁 Restart App"):
+                if st.session_state.project_proc:
+                    st.session_state.project_proc.terminate()
+                    st.session_state.project_proc = None
+                    st.experimental_rerun()
+
+            # Show Logs
+            if st.session_state.run_app_triggered:
+                log_file = os.path.join(st.session_state.project_dir, "log.txt")
+                if os.path.exists(log_file):
+                    try:
+                        with open(log_file, "r") as f:
+                            logs = f.readlines()
+                        st.markdown("### 📺 Live Logs (last 20 lines)")
+                        st.text("".join(logs[-20:]) or "⏳ Waiting for output...")
+                    except Exception as e:
+                        st.error(f"❌ Cannot read log file: {e}")
 
 elif section == "📊 Analyze Tools":
     st.title("📊 Code Analysis Tools")
@@ -1212,104 +1436,428 @@ elif section == "🔧 Code Tools":
 
 elif section == "💻 Code Editor":
     st.title("💻 Interactive Code Editor with Output & Preview")
+    tab1, tab2 = st.tabs(["📝 Paste & Run Code", "📦 Full Project Runner"])
+    with tab1:
+        st.markdown("### 🧠 Paste or Write Code Below")
+        editor_lang = st.selectbox("🗂️ Choose Language", ["python", "html", "css", "javascript", "java", "c", "cpp"])
 
-    editor_lang = st.selectbox("🗂️ Choose Language", ["python", "html", "css", "javascript", "java", "c", "cpp"])
+        code_input = st_ace(
+            placeholder=f"Write your {editor_lang} code here...",
+            language=editor_lang,
+            theme="dracula",
+            keybinding="vscode",
+            font_size=14,
+            tab_size=4,
+            show_gutter=True,
+            show_print_margin=False,
+            wrap=True,
+            height=400,
+            key="live_code_editor"
+        )
 
-    code_input = st_ace(
-        placeholder=f"Write your {editor_lang} code here...",
-        language=editor_lang,
-        theme="dracula",
-        keybinding="vscode",
-        font_size=14,
-        tab_size=4,
-        show_gutter=True,
-        show_print_margin=False,
-        wrap=True,
-        height=400,
-        auto_update=True,
-        key="code_editor_block"
-    )
+        if editor_lang in ["python", "c", "cpp", "java"]:
+            user_input = st.text_area("🧾 Provide input (if any, like stdin)", placeholder="Enter input for your program...")
 
-    st.markdown("### 🖥️ Output or Preview")
+        run = st.button("🚀 Run Code")
 
-    if st.button("🚀 Run Code / Preview"):
-        if editor_lang == "python":
-            try:
-                output_buffer = io.StringIO()
-                with contextlib.redirect_stdout(output_buffer):
-                    exec(code_input, {})
-                st.success("✅ Code executed successfully!")
-                st.text_area("📤 Output", output_buffer.getvalue(), height=200)
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+        if run:
+            st.markdown("### 💻 Terminal Output")
 
-        elif editor_lang in ["c", "cpp", "java"]:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                file_ext = {"c": ".c", "cpp": ".cpp", "java": ".java"}[editor_lang]
-                filename = os.path.join(tmpdir, "program" + file_ext)
-
-                with open(filename, "w") as f:
-                    f.write(code_input)
-
+            if editor_lang == "python":
                 try:
-                    if editor_lang == "c":
-                        exe_path = os.path.join(tmpdir, "program.out")
-                        subprocess.run(["gcc", filename, "-o", exe_path], check=True)
-                        result = subprocess.run([exe_path], capture_output=True, text=True)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w") as tmp_file:
+                        tmp_file.write(code_input)
+                        tmp_file_path = tmp_file.name
 
-                    elif editor_lang == "cpp":
-                        exe_path = os.path.join(tmpdir, "program.out")
-                        subprocess.run(["g++", filename, "-o", exe_path], check=True)
-                        result = subprocess.run([exe_path], capture_output=True, text=True)
-
-                    elif editor_lang == "java":
-                        subprocess.run(["javac", filename], check=True)
-                        result = subprocess.run(["java", "-cp", tmpdir, "program"], capture_output=True, text=True)
-
-                    st.success("✅ Execution successful!")
-                    st.text_area("📤 Output", result.stdout, height=200)
+                    result = subprocess.run(
+                        ["python", tmp_file_path],
+                        input=user_input.encode("utf-8"),
+                        capture_output=True,
+                        timeout=10
+                    )
+                    st.code(result.stdout.decode() or "✅ No output", language="bash")
                     if result.stderr:
-                        st.text_area("⚠️ Errors", result.stderr, height=200)
+                        st.error("⚠️ Errors:")
+                        st.code(result.stderr.decode(), language="bash")
+                except Exception as e:
+                    st.error("❌ Error running Python code:")
+                    st.code(str(e), language="bash")
 
-                except subprocess.CalledProcessError as e:
-                    st.error("❌ Compilation or Execution Error")
-                    st.code(e.stderr if e.stderr else str(e))
+            elif editor_lang in ["c", "cpp", "java"]:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    file_ext = {"c": ".c", "cpp": ".cpp", "java": ".java"}[editor_lang]
+                    source_file = os.path.join(tmpdir, "main" + file_ext)
+                    with open(source_file, "w") as f:
+                        f.write(code_input)
 
-        elif editor_lang == "html":
-            st.success("✅ HTML Preview Below")
-            components.html(code_input, height=500)
+                    try:
+                        if editor_lang == "c":
+                            exe = os.path.join(tmpdir, "a.out")
+                            subprocess.run(["gcc", source_file, "-o", exe], check=True)
+                            result = subprocess.run([exe], input=user_input.encode(), capture_output=True, text=True)
 
-        elif editor_lang == "javascript":
-            html_template = f"""
-            <html>
-            <body>
-            <h4>JavaScript Output:</h4>
-            <div id="output"></div>
-            <script>
-            try {{
-                {code_input}
-            }} catch (e) {{
-                document.getElementById('output').innerText = e;
-            }}
-            </script>
-            </body>
-            </html>
-            """
-            components.html(html_template, height=500)
+                        elif editor_lang == "cpp":
+                            exe = os.path.join(tmpdir, "a.out")
+                            subprocess.run(["g++", source_file, "-o", exe], check=True)
+                            result = subprocess.run([exe], input=user_input.encode(), capture_output=True, text=True)
 
-        elif editor_lang == "css":
-            html_preview = f"""
-            <html>
-            <head><style>{code_input}</style></head>
-            <body><div class="test">CSS applied successfully!</div></body>
-            </html>
-            """
-            st.success("✅ CSS Preview Below")
-            components.html(html_preview, height=500)
+                        elif editor_lang == "java":
+                            subprocess.run(["javac", source_file], check=True)
+                            result = subprocess.run(["java", "-cp", tmpdir, "main"], input=user_input.encode(), capture_output=True, text=True)
 
-    st.download_button(
-        label="📥 Download Code",
-        data=code_input,
-        file_name=f"your_code.{editor_lang}",
-        mime="text/plain"
-    )
+                        st.code(result.stdout or "✅ No output", language="bash")
+                        if result.stderr:
+                            st.error("⚠️ Errors:")
+                            st.code(result.stderr, language="bash")
+
+                    except subprocess.CalledProcessError as e:
+                        st.error("❌ Compilation/Execution Error")
+                        st.code(e.stderr if e.stderr else str(e), language="bash")
+
+            elif editor_lang == "html":
+                st.success("✅ HTML Preview")
+                components.html(code_input, height=500)
+
+            elif editor_lang == "javascript":
+                html_code = f"""
+                <html><body>
+                <h4>JavaScript Output:</h4>
+                <div id="output"></div>
+                <script>
+                try {{
+                    {code_input}
+                }} catch(e) {{
+                    document.getElementById('output').innerText = e.toString();
+                }}
+                </script>
+                </body></html>
+                """
+                components.html(html_code, height=500)
+
+            elif editor_lang == "css":
+                html_with_css = f"""
+                <html><head><style>{code_input}</style></head>
+                <body><div class="test">✅ CSS applied successfully!</div></body>
+                </html>
+                """
+                st.success("✅ CSS Rendered Below")
+                components.html(html_with_css, height=500)
+
+        st.download_button("📥 Download Code", code_input, file_name=f"code.{editor_lang}", mime="text/plain")
+        
+    with tab2:
+        st.subheader("🧩 Full Project Runner & File Explorer")
+
+        if "project_proc" not in st.session_state:
+            st.session_state.project_proc = None
+        if "log_output" not in st.session_state:
+            st.session_state.log_output = ""
+        if "file_paths" not in st.session_state:
+            st.session_state.file_paths = []
+        if "project_dir" not in st.session_state:
+            st.session_state.project_dir = tempfile.mkdtemp()
+        if "selected_file" not in st.session_state:
+            st.session_state.selected_file = None
+        if "run_app_triggered" not in st.session_state:
+            st.session_state.run_app_triggered = False
+
+        # Upload or GitHub
+        mode = st.radio("Choose Project Source:", ["Upload Files", "GitHub Repo"], horizontal=True)
+
+        if mode == "Upload Files":
+            uploaded_files = st.file_uploader("Upload full project folder", accept_multiple_files=True)
+            if uploaded_files:
+                st.session_state.project_dir = tempfile.mkdtemp()
+                st.session_state.file_paths = []
+                for file in uploaded_files:
+                    full_path = os.path.join(st.session_state.project_dir, file.name)
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    with open(full_path, "wb") as f:
+                        f.write(file.read())
+                    st.session_state.file_paths.append(full_path)
+
+        elif mode == "GitHub Repo":
+            import git
+            github_url = st.text_input("Enter GitHub Repo URL:")
+            if st.button("Clone Repository"):
+                with st.spinner("Cloning repo..."):
+                    try:
+                        st.session_state.project_dir = tempfile.mkdtemp()
+                        git.Repo.clone_from(github_url, st.session_state.project_dir)
+                        file_paths = []
+                        for root, _, files in os.walk(st.session_state.project_dir):
+                            for file in files:
+                                file_paths.append(os.path.join(root, file))
+                        st.session_state.file_paths = file_paths
+                        st.success("✅ Repo cloned successfully.")
+                    except Exception as e:
+                        st.error(f"❌ Failed to clone repo: {e}")
+
+        if st.session_state.file_paths:
+            st.markdown("### 📁 File Tree")
+            for path in sorted(st.session_state.file_paths):
+                rel_path = os.path.relpath(path, st.session_state.project_dir)
+                if st.button(f"📄 {rel_path}", key=rel_path):
+                    st.session_state.selected_file = rel_path
+
+        # Show Editor
+        if st.session_state.selected_file:
+            selected_path = os.path.join(st.session_state.project_dir, st.session_state.selected_file)
+            ext = pathlib.Path(selected_path).suffix.lower()
+            lang_map = {
+                ".py": "python", ".html": "html", ".css": "css", ".js": "javascript",
+                ".json": "json", ".txt": "text", ".md": "markdown"
+            }
+            language = lang_map.get(ext, "text")
+
+            try:
+                with open(selected_path, "r", encoding="utf-8") as f:
+                    selected_code = f.read()
+            except Exception:
+                selected_code = ""
+
+            edited_code = st_ace(
+                value=selected_code,
+                language=language,
+                theme="monokai",
+                keybinding="vscode",
+                height=500,
+                key="ace_project_editor"
+            )
+
+            # Save on change
+            with open(selected_path, "w", encoding="utf-8") as f:
+                f.write(edited_code)
+
+        # Main File Selector
+        runnable_files = [os.path.relpath(p, st.session_state.project_dir)
+                        for p in st.session_state.file_paths if p.endswith((".py", ".html"))]
+        if runnable_files:
+            main_file = st.selectbox("🎯 Select Main File to Run", runnable_files)
+
+            main_path = os.path.join(st.session_state.project_dir, main_file)
+
+            def detect_app_type(code):
+                if "streamlit" in code:
+                    return "streamlit"
+                elif "Flask" in code or "from flask" in code:
+                    return "flask"
+                elif "<html" in code.lower():
+                    return "html"
+                else:
+                    return "python"
+
+            with open(main_path, "r", encoding="utf-8") as f:
+                main_code = f.read()
+
+            app_type = detect_app_type(main_code)
+            st.info(f"🧠 Detected app type: **{app_type.upper()}**")
+
+            # Run Project
+            if st.button("🚀 Run Project"):
+                if st.session_state.project_proc:
+                    st.warning("A project is already running.")
+                else:
+                    try:
+                        log_path = os.path.join(st.session_state.project_dir, "log.txt")
+                        with open(log_path, "w") as log_file:
+                            if app_type == "python":
+                                proc = subprocess.Popen(["python", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                            elif app_type == "flask":
+                                proc = subprocess.Popen(["python", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                                st.markdown("🌐 Flask running at [http://localhost:5000](http://localhost:5000)")
+                            elif app_type == "streamlit":
+                                proc = subprocess.Popen(["streamlit", "run", main_path], cwd=st.session_state.project_dir, stdout=log_file, stderr=subprocess.STDOUT)
+                                st.markdown("🌐 Streamlit running at [http://localhost:8501](http://localhost:8501)")
+                            elif app_type == "html":
+                                st.success("✅ HTML Preview Below")
+                                html_embed(main_code, height=500)
+                                proc = None
+                            st.session_state.project_proc = proc
+                            st.session_state.run_app_triggered = True
+                            time.sleep(1)  # wait to generate log
+                    except Exception as e:
+                        st.error(f"❌ Error running app: {e}")
+
+            # Kill/Restart
+            col1, col2 = st.columns(2)
+            if col1.button("🛑 Stop App"):
+                if st.session_state.project_proc:
+                    st.session_state.project_proc.terminate()
+                    st.session_state.project_proc = None
+                    st.success("🛑 App stopped.")
+
+            if col2.button("🔁 Restart App"):
+                if st.session_state.project_proc:
+                    st.session_state.project_proc.terminate()
+                    st.session_state.project_proc = None
+                    st.experimental_rerun()
+
+            # Show Logs
+            if st.session_state.run_app_triggered:
+                log_file = os.path.join(st.session_state.project_dir, "log.txt")
+                if os.path.exists(log_file):
+                    try:
+                        with open(log_file, "r") as f:
+                            logs = f.readlines()
+                        st.markdown("### 📺 Live Logs (last 20 lines)")
+                        st.text("".join(logs[-20:]) or "⏳ Waiting for output...")
+                    except Exception as e:
+                        st.error(f"❌ Cannot read log file: {e}")
+
+elif section == "🧪 Tester":
+    st.title("🧪 Code Tester — Generate & Run Tests")
+    if "tester_code" not in st.session_state:
+        st.session_state.tester_code = ""
+    if "tester_files" not in st.session_state:
+        st.session_state.tester_files = []
+    if "tester_generated_tests" not in st.session_state:
+        st.session_state.tester_generated_tests = ""
+
+    mode = st.radio("Choose Input Mode", ["Paste Code", "Upload Files", "GitHub Repo"], horizontal=True)
+
+    if mode == "Paste Code":
+        st.session_state.tester_code = st.text_area("Paste your code to test", height=300, key="paste_code")
+
+    elif mode == "Upload Files":
+        uploaded_files = st.file_uploader("Upload .py files", type=["py"], accept_multiple_files=True)
+        if uploaded_files:
+            st.session_state.tester_files = uploaded_files
+
+    elif mode == "GitHub Repo":
+        import git
+        github_url = st.text_input("Enter GitHub Repo URL")
+        if st.button("Clone Repo"):
+            repo_dir = tempfile.mkdtemp()
+            try:
+                git.Repo.clone_from(github_url, repo_dir)
+                file_list = []
+                for root, _, files in os.walk(repo_dir):
+                    for f in files:
+                        if f.endswith(".py"):
+                            file_list.append(os.path.join(root, f))
+                st.session_state.tester_files = file_list
+                st.success("✅ Repo cloned.")
+            except Exception as e:
+                st.error(f"❌ Failed to clone: {e}")
+
+    # === CLEANUP: Strip markdown/explanation from Mistral ===
+    def extract_python_code(text):
+        if "```python" in text:
+            match = re.search(r"```python(.*?)```", text, re.DOTALL)
+            if match:
+                return match.group(1).strip()
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip().startswith(("import", "from", "def", "class")):
+                return "\n".join(lines[i:]).strip()
+        return text.strip()
+
+    def generate_tests_with_mistral(code):
+        prompt = f"Write pytest unit tests for the following Python code. ONLY return valid code without markdown:\n\n{code}"
+        return ask_agent_streaming(prompt)
+
+    # === TEST GENERATION ===
+    if st.button("🧪 Generate Pytest Test Cases"):
+        if mode == "Paste Code" and st.session_state.tester_code.strip():
+            with st.spinner("Generating test cases..."):
+                test_code = generate_tests_with_mistral(st.session_state.tester_code)
+                st.session_state.tester_generated_tests = test_code
+
+        elif mode in ["Upload Files", "GitHub Repo"] and st.session_state.tester_files:
+            combined_code = ""
+            for file in st.session_state.tester_files:
+                try:
+                    if isinstance(file, str):
+                        with open(file, "r", encoding="utf-8") as f:
+                            combined_code += f.read() + "\n"
+                    else:
+                        combined_code += file.read().decode("utf-8") + "\n"
+                except Exception as e:
+                    st.warning(f"Skipped unreadable file: {file.name if hasattr(file, 'name') else file}")
+            with st.spinner("Generating test cases..."):
+                test_code = generate_tests_with_mistral(combined_code)
+                st.session_state.tester_generated_tests = test_code
+        else:
+            st.warning("⚠️ No code provided.")
+
+    if st.session_state.tester_generated_tests:
+        st.markdown("### 🧾 Generated Test Code")
+        cleaned_test_code = extract_python_code(st.session_state.tester_generated_tests)
+
+        # ✅ Patch bad imports
+        for wrong in ["from your_module", "from calculator", "from code"]:
+            cleaned_test_code = cleaned_test_code.replace(wrong, "from user_code")
+
+        st.session_state.cleaned_test_code_final = cleaned_test_code
+        st.code(cleaned_test_code, language="python")
+
+    # === TEST RUNNER ===
+    if st.button("▶️ Run Tests"):
+        with tempfile.TemporaryDirectory() as test_dir:
+            main_code_path = os.path.join(test_dir, "user_code.py")
+            test_file_path = os.path.join(test_dir, "test_generated.py")
+
+            # ✅ Save user code
+            if mode == "Paste Code":
+                with open(main_code_path, "w") as f:
+                    f.write(st.session_state.tester_code)
+            else:
+                for file in st.session_state.tester_files:
+                    file_path = os.path.join(test_dir, os.path.basename(file.name if not isinstance(file, str) else file))
+                    content = open(file, "r").read() if isinstance(file, str) else file.read().decode("utf-8")
+                    with open(file_path, "w") as f:
+                        f.write(content)
+                # For consistency, we copy the first file as user_code.py
+                if st.session_state.tester_files:
+                    with open(main_code_path, "w") as f:
+                        content = open(st.session_state.tester_files[0], "r").read() if isinstance(st.session_state.tester_files[0], str) else st.session_state.tester_files[0].read().decode("utf-8")
+                        f.write(content)
+
+            # ✅ Save patched test file
+            test_code_final = extract_python_code(st.session_state.tester_generated_tests)
+            for wrong in ["from your_module", "from calculator", "from code"]:
+                test_code_final = test_code_final.replace(wrong, "from user_code")
+
+            with open(test_file_path, "w") as f:
+                f.write(test_code_final)
+
+            # ✅ Run tests
+            st.markdown("### 📊 Pytest Output")
+            try:
+                result = subprocess.run(["pytest", test_file_path, "-v"], cwd=test_dir, capture_output=True, text=True, timeout=15)
+                st.code(result.stdout or "✅ No output", language="bash")
+                if result.stderr:
+                    st.error("⚠️ Errors:")
+                    st.code(result.stderr, language="bash")
+
+                # === Visualization ===
+                st.markdown("### 📋 Test Results Table & 📊 Chart")
+                matches = re.findall(r"(test_[\w\[\]]+.*?)\s+(PASSED|FAILED|SKIPPED)", result.stdout)
+                summary_counts = {"passed": 0, "failed": 0, "skipped": 0}
+                test_data = []
+
+                for name, status in matches:
+                    status = status.lower()
+                    summary_counts[status] += 1
+                    test_data.append({"Test Case": name.strip(), "Status": status})
+
+                if test_data:
+                    df = pd.DataFrame(test_data)
+                    st.dataframe(df)
+
+                    # Pie Chart
+                    fig, ax = plt.subplots()
+                    labels = list(summary_counts.keys())
+                    sizes = list(summary_counts.values())
+                    colors = ['green', 'red', 'orange']
+                    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+                    ax.axis('equal')
+                    st.pyplot(fig)
+                else:
+                    st.warning("⚠️ No test results parsed. Maybe test names didn't follow `test_` naming?")
+
+            except subprocess.TimeoutExpired:
+                st.error("⏱️ Test execution timed out.")
+            except Exception as e:
+                st.error(f"❌ Failed to run tests: {e}")
