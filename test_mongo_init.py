@@ -105,3 +105,78 @@ def test_get_model_endpoint():
     endpoint = mongo_init.get_model_endpoint("llmModel")
     print(f"Endpoint for llmModel: {endpoint}")
     assert endpoint == "http://llm-endpoint"
+
+import os
+import sys
+import pytest
+from pymongo import MongoClient
+from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.abspath("katonic-converse/smartchatcopilot"))
+
+import routes.utilities.mongo_init as mongo_init
+
+load_dotenv()
+
+os.environ["EMBEDDING_SERVICE_TYPE"] = os.getenv("EMBEDDING_SERVICE_TYPE", "embeddingModel1")
+os.environ["SERVICE_TYPE"] = os.getenv("SERVICE_TYPE", "katonicLLM")
+
+def test_get_general_settings():
+    result = mongo_init.get_general_settings()
+    print("DEBUG get_general_settings:", result)
+    assert isinstance(result, dict)
+    assert len(result) >= 1
+
+def test_get_local_mongo_cost_collection():
+    coll = mongo_init.get_local_mongo_cost_collection()
+    print("DEBUG get_local_mongo_cost_collection:", coll.name)
+    assert coll.name == mongo_init.FM_META_COLLECTION
+
+def test_get_local_mongo_logs_collection():
+    coll = mongo_init.get_local_mongo_logs_collection()
+    print("DEBUG get_local_mongo_logs_collection:", coll.name)
+    assert coll.name == mongo_init.LOGS_COLLECTION_NAME
+
+def test_get_local_mongo_embedding_meta():
+    result = mongo_init.get_local_mongo_embedding_meta()
+    print("DEBUG get_local_mongo_embedding_meta:", result)
+    assert isinstance(result, pd.DataFrame)
+    assert not result.empty
+
+def test_get_local_mongo_llm_meta():
+    result = mongo_init.get_local_mongo_llm_meta(os.environ["SERVICE_TYPE"])
+    print("DEBUG get_local_mongo_llm_meta:", result)
+    assert isinstance(result, pd.DataFrame)
+    assert not result.empty
+
+def test_check_for_mongo_existance():
+    result1 = mongo_init.check_for_mongo_existance("katonicLLM")
+    result2 = mongo_init.check_for_mongo_existance("embeddingModel1")
+    print("DEBUG check_for_mongo_existance katonicLLM:", result1)
+    print("DEBUG check_for_mongo_existance embeddingModel1:", result2)
+    assert not result1.empty
+    assert not result2.empty
+
+def test_get_policy_information():
+    result = mongo_init.get_policy_information()
+    print("DEBUG get_policy_information:", result)
+    assert isinstance(result, pd.Series)
+    assert len(result) >= 1
+
+def test_get_message_collection():
+    coll = mongo_init.get_message_collection()
+    print("DEBUG get_message_collection:", coll.name)
+    assert coll.name == mongo_init.MESSAGE_COLLECTION
+
+def test_get_model_provider():
+    provider1 = mongo_init.get_model_provider("katonicLLM")
+    provider2 = mongo_init.get_model_provider("embeddingModel1")
+    print("DEBUG get_model_provider katonicLLM:", provider1)
+    print("DEBUG get_model_provider embeddingModel1:", provider2)
+    assert provider1 == "katonic"
+    assert provider2 == "katonic"
+
+def test_get_model_endpoint():
+    endpoint = mongo_init.get_model_endpoint("katonicLLM")
+    print("DEBUG get_model_endpoint katonicLLM:", endpoint)
+    assert endpoint == "https://llm.api"
